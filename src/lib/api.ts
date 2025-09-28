@@ -80,6 +80,43 @@ class ApiClient {
     return null;
   }
 
+  private async refreshToken(): Promise<boolean> {
+    const tokens = this.getTokensFromCookies();
+    if (!tokens?.refreshToken) return false;
+
+    try {
+      const response = await fetch(`${this.baseURL}/auth/refresh`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${tokens.refreshToken}`,
+        },
+      });
+
+      if (!response.ok) return false;
+
+      const data = await response.json();
+      
+      // Сохраняем новые токены
+       const isProduction = process.env.NODE_ENV === 'production';
+       const domain = isProduction ? '' : '';
+       const secureFlag = isProduction ? '; secure' : '';
+       const sameSite = isProduction ? '; samesite=strict' : '; samesite=lax';
+       
+       document.cookie = `accessToken=${data.accessToken}; path=/${domain}; max-age=${
+         7 * 24 * 60 * 60
+       }${secureFlag}${sameSite}`;
+       document.cookie = `refreshToken=${data.refreshToken}; path=/${domain}; max-age=${
+         30 * 24 * 60 * 60
+       }${secureFlag}${sameSite}`;
+
+      return true;
+    } catch (error) {
+      console.error("Token refresh failed:", error);
+      return false;
+    }
+  }
+
   private async request<T>(
     endpoint: string,
     options: RequestInit = {}
@@ -92,7 +129,7 @@ class ApiClient {
       ...(tokens?.accessToken
         ? { Authorization: `Bearer ${tokens.accessToken}` }
         : {}),
-      ...options.headers,
+      ...(options.headers as Record<string, string>),
     };
 
     try {
@@ -102,6 +139,30 @@ class ApiClient {
       });
 
       if (!response.ok) {
+        // Если получили 401 ошибку, пытаемся обновить токен
+        if (response.status === 401 && endpoint !== "/auth/refresh") {
+          const refreshed = await this.refreshToken();
+          if (refreshed) {
+            // Повторяем запрос с новым токеном
+            const newTokens = this.getTokensFromCookies();
+            const newHeaders = {
+              ...headers,
+              ...(newTokens?.accessToken
+                ? { Authorization: `Bearer ${newTokens.accessToken}` }
+                : {}),
+            };
+            
+            const retryResponse = await fetch(url, {
+              ...options,
+              headers: newHeaders,
+            });
+            
+            if (retryResponse.ok) {
+              return await retryResponse.json();
+            }
+          }
+        }
+        
         const errorData = await response.json().catch(() => ({}));
         throw new Error(
           errorData.message || `HTTP error! status: ${response.status}`
@@ -129,13 +190,18 @@ class ApiClient {
       body: JSON.stringify({ email, password }),
     });
 
-    // Сохраняем токены в куки
-    document.cookie = `accessToken=${response.accessToken}; path=/; max-age=${
+    // Сохраняем токены в куки с правильными настройками
+    const isProduction = process.env.NODE_ENV === 'production';
+    const domain = isProduction ? '' : '';
+    const secureFlag = isProduction ? '; secure' : '';
+    const sameSite = isProduction ? '; samesite=strict' : '; samesite=lax';
+    
+    document.cookie = `accessToken=${response.accessToken}; path=/${domain}; max-age=${
       7 * 24 * 60 * 60
-    }; secure; samesite=strict`;
-    document.cookie = `refreshToken=${response.refreshToken}; path=/; max-age=${
+    }${secureFlag}${sameSite}`;
+    document.cookie = `refreshToken=${response.refreshToken}; path=/${domain}; max-age=${
       30 * 24 * 60 * 60
-    }; secure; samesite=strict`;
+    }${secureFlag}${sameSite}`;
 
     return response;
   }

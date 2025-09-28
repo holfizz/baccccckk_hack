@@ -54,10 +54,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const logout = () => {
-    apiClient.logout();
+    // Очищаем токены из куков с правильными настройками
+    const isProduction = process.env.NODE_ENV === 'production';
+    const domain = isProduction ? '' : '';
+    const sameSite = isProduction ? '; samesite=strict' : '; samesite=lax';
+    
+    document.cookie = `accessToken=; path=/${domain}; max-age=0${sameSite}`;
+    document.cookie = `refreshToken=; path=/${domain}; max-age=0${sameSite}`;
     setUser(null);
-    // Редирект на главную страницу после выхода
-    window.location.href = "/";
   };
 
   const isAdmin = user?.role === "ADMIN";
